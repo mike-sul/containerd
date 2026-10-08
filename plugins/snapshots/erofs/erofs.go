@@ -283,6 +283,23 @@ func (s *snapshotter) layerBlobPath(id string) string {
 	return filepath.Join(s.root, "snapshots", id, "layer.erofs")
 }
 
+// syncPaths fsyncs each file or directory in order, so that everything written
+// to them so far is on disk before the caller records it elsewhere.
+func syncPaths(paths ...string) error {
+	for _, p := range paths {
+		f, err := os.Open(p)
+		if err != nil {
+			return fmt.Errorf("failed to open %s for sync: %w", p, err)
+		}
+		err = f.Sync()
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("failed to sync %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
 func (s *snapshotter) fsMetaPath(id string) string {
 	return filepath.Join(s.root, "snapshots", id, "fsmeta.erofs")
 }
@@ -962,6 +979,25 @@ func (s *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	}
 
 	// Note: dm-verity formatting is handled by the EROFS differ, not here
+
+	// The metadata store syncs its own file when the snapshot is committed, so
+	// the record of a committed layer must not become durable before the layer
+	// itself. Otherwise a power loss shortly after a successful pull leaves a
+	// committed snapshot whose blob is truncated or whose directory does not
+	// exist, and nothing re-pulls a layer whose chain ID already exists. Only
+	// owned blobs are synced; shared blobs from the layer content cache are not
+	// written by the snapshotter, so whoever populates the cache must make them
+	// durable. The snapshot directory and its entry in the parent are always
+	// synced.
+	var toSync []string
+	if src.owned() {
+		toSync = append(toSync, layerBlob)
+	}
+	snapshotDir := filepath.Join(s.root, "snapshots")
+	toSync = append(toSync, filepath.Join(snapshotDir, id), snapshotDir)
+	if err := syncPaths(toSync...); err != nil {
+		return err
+	}
 
 	return s.ms.WithTransaction(ctx, true, func(ctx context.Context) error {
 		if _, err := os.Stat(layerBlob); err != nil {

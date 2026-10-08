@@ -143,6 +143,21 @@ func TestGetCleanupDirectoriesSkipsSnapshotTempDirs(t *testing.T) {
 	assert.Equal(t, []string{orphanDir}, cleanup)
 }
 
+// TestSyncPaths checks that files and directories can be synced, and a path
+// that cannot be opened returns an error instead of being skipped.
+func TestSyncPaths(t *testing.T) {
+	root := t.TempDir()
+	snapshotDir := filepath.Join(root, "snapshots", "1")
+	require.NoError(t, os.MkdirAll(snapshotDir, 0700))
+	blob := filepath.Join(snapshotDir, "layer.erofs")
+	require.NoError(t, os.WriteFile(blob, []byte("erofs"), 0644))
+
+	require.NoError(t, syncPaths(blob, snapshotDir, filepath.Join(root, "snapshots")))
+
+	err := syncPaths(snapshotDir, filepath.Join(snapshotDir, "missing"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
 // TestWritableSize exercises the LabelSnapshotMaxSize override that the
 // block-mode mkfs path passes to X-containerd.mkfs.size. Covers the
 // happy path (label overrides default), fallback cases (missing, empty,
